@@ -1,0 +1,444 @@
+name: Vigilar Gaztelugatxe
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    # DIA: cada 15 min entre 08:00 y 22:45
+    - cron: "*/15 8-22 * * *"
+      timezone: "Europe/Madrid"
+
+    # NOCHE: cada 45 min desde las 23:00 hasta las 07:59
+    - cron: "0,45 23 * * *"
+      timezone: "Europe/Madrid"
+
+    - cron: "30 0 * * *"
+      timezone: "Europe/Madrid"
+
+    - cron: "15 1 * * *"
+      timezone: "Europe/Madrid"
+
+    - cron: "0,45 2 * * *"
+      timezone: "Europe/Madrid"
+
+    - cron: "30 3 * * *"
+      timezone: "Europe/Madrid"
+
+    - cron: "15 4 * * *"
+      timezone: "Europe/Madrid"
+
+    - cron: "0,45 5 * * *"
+      timezone: "Europe/Madrid"
+
+    - cron: "30 6 * * *"
+      timezone: "Europe/Madrid"
+
+    - cron: "15 7 * * *"
+      timezone: "Europe/Madrid"
+
+jobs:
+  vigilar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Preparar Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Instalar Playwright
+        run: |
+          npm init -y
+          npm install playwright
+          npx playwright install --with-deps chromium
+
+      - name: Comprobar disponibilidad
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+        run: |
+          cat > vigilar.js <<'EOF'
+          const { chromium } = require('playwright');
+          const https = require('https');
+
+          const URL = 'https://public.tiketa.eus/gaztelugatxe/';
+
+          function telegram(texto) {
+            return new Promise((resolve, reject) => {
+
+              const datos = new URLSearchParams({
+                chat_id: process.env.TELEGRAM_CHAT_ID,
+                text: texto,
+                disable_web_page_preview: 'false'
+              }).toString();
+
+              const req = https.request({
+                hostname: 'api.telegram.org',
+                path:
+                  '/bot' +
+                  process.env.TELEGRAM_BOT_TOKEN +
+                  '/sendMessage',
+                method: 'POST',
+                headers: {
+                  'Content-Type':
+                    'application/x-www-form-urlencoded',
+                  'Content-Length':
+                    Buffer.byteLength(datos)
+                }
+              }, res => {
+
+                res.on('data', () => {});
+
+                res.on('end', () => {
+                  resolve();
+                });
+              });
+
+              req.on('error', reject);
+
+              req.write(datos);
+              req.end();
+            });
+          }
+
+          (async () => {
+
+            console.log(
+              'Comprobando Gaztelugatxe para 2 personas...'
+            );
+
+            const browser = await chromium.launch({
+              headless: true
+            });
+
+            const page = await browser.newPage({
+              locale: 'es-ES',
+              timezoneId: 'Europe/Madrid'
+            });
+
+            /*
+             * Detectar respuestas del servidor que indiquen
+             * limitación o bloqueo.
+             */
+            let bloqueoDetectado = false;
+
+            page.on('response', response => {
+
+              const status = response.status();
+
+              if (status === 403 || status === 429) {
+
+                bloqueoDetectado = true;
+
+                console.log(
+                  'Protección detectada. HTTP ' + status
+                );
+              }
+            });
+
+            const respuesta = await page.goto(URL, {
+              waitUntil: 'networkidle',
+              timeout: 60000
+            });
+
+            if (respuesta) {
+
+              const status = respuesta.status();
+
+              if (status === 403 || status === 429) {
+
+                await telegram(
+                  '⚠️ Gaztelugatxe está limitando las ' +
+                  'comprobaciones (HTTP ' +
+                  status +
+                  ').\n\n' +
+                  'El detector NO intentará saltarse ' +
+                  'la protección.'
+                );
+
+                await browser.close();
+                return;
+              }
+            }
+
+            /*
+             * Cookies
+             */
+            const aceptar = page.getByRole(
+              'button',
+              { name: /Aceptar/i }
+            );
+
+            if (await aceptar.count()) {
+
+              try {
+
+                await aceptar.first().click({
+                  timeout: 3000
+                });
+
+              } catch {}
+            }
+
+            await page.waitForTimeout(1000);
+
+            /*
+             * Comprobar CAPTCHA o mensajes
+             * típicos de protección.
+             */
+            const textoInicial =
+              await page.locator('body').innerText();
+
+            if (
+              bloqueoDetectado ||
+              /captcha|too many requests|access denied|acceso denegado|verifica que eres humano/i
+                .test(textoInicial)
+            ) {
+
+              await telegram(
+                '⚠️ El detector ha encontrado una ' +
+                'protección anti-bot/CAPTCHA en Gaztelugatxe.\n\n' +
+                'No voy a intentar esquivarla.'
+              );
+
+              await browser.close();
+              return;
+            }
+
+            const selects = page.locator('select');
+
+            const numeroSelects =
+              await selects.count();
+
+            if (numeroSelects < 4) {
+
+              throw new Error(
+                'La página ha cambiado: no encuentro ' +
+                'los controles de reserva esperados.'
+              );
+            }
+
+            /*
+             * Reserva individual
+             */
+            await selects.nth(1).selectOption({
+              label: 'Individual (1–10 personas)'
+            });
+
+            await page.waitForTimeout(750);
+
+            /*
+             * Dos personas
+             */
+            await selects.nth(3).selectOption({
+              label: '2'
+            });
+
+            await page.waitForTimeout(750);
+
+            /*
+             * Ir a disponibilidad
+             */
+            const siguiente = page.getByRole(
+              'button',
+              { name: /Siguiente/i }
+            );
+
+            if (!await siguiente.count()) {
+
+              throw new Error(
+                'No encuentro el botón Siguiente.'
+              );
+            }
+
+            await siguiente.first().click();
+
+            await page.waitForTimeout(4500);
+
+            const texto =
+              await page.locator('body').innerText();
+
+            console.log('\n=== RESULTADO ===\n');
+            console.log(texto);
+
+            /*
+             * Comprobar de nuevo si apareció
+             * alguna protección.
+             */
+            if (
+              bloqueoDetectado ||
+              /captcha|too many requests|access denied|acceso denegado|verifica que eres humano/i
+                .test(texto)
+            ) {
+
+              await telegram(
+                '⚠️ Gaztelugatxe ha activado una ' +
+                'protección durante la comprobación.\n\n' +
+                'El detector se ha detenido sin intentar ' +
+                'saltarse la protección.'
+              );
+
+              await browser.close();
+              return;
+            }
+
+            /*
+             * Busca bloques como:
+             *
+             * Dom, Ago 30
+             * 18:05
+             * 2 plazas
+             *
+             * o:
+             *
+             * Sun, Aug 30
+             * 18:05
+             * 2 plazas
+             */
+
+            const regex =
+              /([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{2,})\s*,?\s*(Ago|Aug)\s+(\d{1,2})[\s\S]{0,80}?(\d{1,2}:\d{2})[\s\S]{0,80}?(\d+)\s+plazas?/gi;
+
+            const disponibles = [];
+
+            let resultado;
+
+            while (
+              (resultado = regex.exec(texto)) !== null
+            ) {
+
+              const dia =
+                Number(resultado[3]);
+
+              const hora =
+                resultado[4];
+
+              const plazas =
+                Number(resultado[5]);
+
+              if (plazas >= 2) {
+
+                disponibles.push({
+                  dia,
+                  hora,
+                  plazas
+                });
+              }
+            }
+
+            /*
+             * Quitar duplicados.
+             */
+            const unicos = [];
+
+            const vistos = new Set();
+
+            for (const hueco of disponibles) {
+
+              const clave =
+                hueco.dia + '-' + hueco.hora;
+
+              if (!vistos.has(clave)) {
+
+                vistos.add(clave);
+                unicos.push(hueco);
+              }
+            }
+
+            if (unicos.length === 0) {
+
+              console.log(
+                '\nNo hay plazas para 2 personas ' +
+                'en agosto de 2026.'
+              );
+
+              await browser.close();
+              return;
+            }
+
+            /*
+             * Priorizar 27-31 de agosto.
+             */
+            unicos.sort((a, b) => {
+
+              const prioridadA =
+                a.dia >= 27 ? 0 : 1;
+
+              const prioridadB =
+                b.dia >= 27 ? 0 : 1;
+
+              if (prioridadA !== prioridadB) {
+
+                return prioridadA - prioridadB;
+              }
+
+              if (a.dia !== b.dia) {
+
+                return a.dia - b.dia;
+              }
+
+              return a.hora.localeCompare(b.hora);
+            });
+
+            let mensaje =
+              '🚨 ¡HAY PLAZAS EN GAZTELUGATXE!\n\n' +
+              'Disponibilidad para 2 personas:\n\n';
+
+            for (const hueco of unicos) {
+
+              const estrella =
+                hueco.dia >= 27 &&
+                hueco.dia <= 31
+                  ? '⭐ '
+                  : '• ';
+
+              mensaje +=
+                estrella +
+                hueco.dia +
+                ' de agosto de 2026 — ' +
+                hueco.hora +
+                ' — ' +
+                hueco.plazas +
+                ' plazas\n';
+            }
+
+            mensaje +=
+              '\n⭐ Prioridad: 27–31 de agosto';
+
+            mensaje +=
+              '\n\n🎟 RESERVAR AHORA:\n' +
+              URL;
+
+            await telegram(mensaje);
+
+            console.log(
+              '\nAviso enviado por Telegram.'
+            );
+
+            await browser.close();
+
+          })().catch(async error => {
+
+            console.error(error);
+
+            /*
+             * Avisar de cambios/error para que
+             * sepamos si la web ha cambiado.
+             */
+            try {
+
+              await telegram(
+                '⚠️ El detector de Gaztelugatxe ' +
+                'ha tenido un error.\n\n' +
+                error.message
+              );
+
+            } catch {}
+
+            process.exit(1);
+          });
+          EOF
+
+          node vigilar.js
