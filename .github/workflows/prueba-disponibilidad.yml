@@ -1,0 +1,141 @@
+name: Probar disponibilidad Gaztelugatxe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  prueba:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Preparar Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Instalar Playwright
+        run: |
+          npm init -y
+          npm install playwright
+          npx playwright install --with-deps chromium
+
+      - name: Probar formulario
+        run: |
+          cat > prueba.js <<'EOF'
+          const { chromium } = require('playwright');
+
+          (async () => {
+            const browser = await chromium.launch({ headless: true });
+
+            const page = await browser.newPage({
+              locale: 'es-ES',
+              timezoneId: 'Europe/Madrid'
+            });
+
+            await page.goto(
+              'https://public.tiketa.eus/gaztelugatxe/',
+              { waitUntil: 'networkidle', timeout: 60000 }
+            );
+
+            // Cookies
+            const aceptar = page.getByRole('button', {
+              name: /Aceptar/i
+            });
+
+            if (await aceptar.count()) {
+              try {
+                await aceptar.first().click({ timeout: 3000 });
+              } catch {}
+            }
+
+            await page.waitForTimeout(1500);
+
+            const selects = page.locator('select');
+
+            console.log('Selects encontrados:', await selects.count());
+
+            // Reserva individual
+            await selects.nth(1).selectOption({
+              label: 'Individual (1–10 personas)'
+            });
+
+            await page.waitForTimeout(1000);
+
+            // 2 personas
+            await selects.nth(3).selectOption({
+              label: '2'
+            });
+
+            await page.waitForTimeout(1000);
+
+            console.log('Tipo de reserva seleccionado');
+            console.log('Personas: 2');
+
+            // Mostrar texto antes de avanzar
+            console.log('\n=== ANTES DE SIGUIENTE ===');
+            console.log(
+              (await page.locator('body').innerText()).slice(0, 12000)
+            );
+
+            const siguiente = page.getByRole('button', {
+              name: /Siguiente/i
+            });
+
+            console.log(
+              'Botones Siguiente encontrados:',
+              await siguiente.count()
+            );
+
+            if (await siguiente.count()) {
+              await siguiente.first().click();
+
+              await page.waitForTimeout(4000);
+
+              console.log('\n=== DESPUES DE SIGUIENTE ===');
+              console.log(
+                (await page.locator('body').innerText()).slice(0, 18000)
+              );
+
+              console.log('\n=== INPUTS DESPUES ===');
+
+              const inputs = page.locator('input');
+
+              for (let i = 0; i < await inputs.count(); i++) {
+                const el = inputs.nth(i);
+
+                console.log({
+                  i,
+                  type: await el.getAttribute('type'),
+                  id: await el.getAttribute('id'),
+                  value: await el.inputValue().catch(() => ''),
+                  placeholder: await el.getAttribute('placeholder')
+                });
+              }
+
+              console.log('\n=== BOTONES DESPUES ===');
+              console.log(
+                await page.locator('button').allTextContents()
+              );
+
+              console.log('\n=== ENLACES DESPUES ===');
+              console.log(
+                await page.locator('a').allTextContents()
+              );
+            }
+
+            await page.screenshot({
+              path: 'disponibilidad.png',
+              fullPage: true
+            });
+
+            await browser.close();
+          })();
+          EOF
+
+          node prueba.js
+
+      - name: Guardar captura
+        uses: actions/upload-artifact@v4
+        with:
+          name: prueba-disponibilidad
+          path: disponibilidad.png
