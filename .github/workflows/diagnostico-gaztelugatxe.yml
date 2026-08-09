@@ -1,0 +1,115 @@
+name: Diagnostico Gaztelugatxe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnostico:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Preparar Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Instalar Playwright
+        run: |
+          npm init -y
+          npm install playwright
+          npx playwright install --with-deps chromium
+
+      - name: Analizar formulario Gaztelugatxe
+        run: |
+          cat > diagnostico.js <<'EOF'
+          const { chromium } = require('playwright');
+
+          (async () => {
+            const browser = await chromium.launch({ headless: true });
+            const page = await browser.newPage({
+              locale: 'es-ES',
+              timezoneId: 'Europe/Madrid'
+            });
+
+            console.log('Abriendo Gaztelugatxe...');
+            await page.goto(
+              'https://public.tiketa.eus/gaztelugatxe/',
+              { waitUntil: 'networkidle', timeout: 60000 }
+            );
+
+            // Intentar cerrar/aceptar cookies
+            const cookieTexts = [
+              'Aceptar',
+              'Accept',
+              'Aceptar todo',
+              'Allow all'
+            ];
+
+            for (const text of cookieTexts) {
+              const button = page.getByRole('button', { name: text, exact: false });
+              if (await button.count()) {
+                try {
+                  await button.first().click({ timeout: 2000 });
+                  break;
+                } catch {}
+              }
+            }
+
+            console.log('\n=== TITULO ===');
+            console.log(await page.title());
+
+            console.log('\n=== SELECTS ===');
+            const selects = await page.locator('select').count();
+
+            for (let i = 0; i < selects; i++) {
+              const select = page.locator('select').nth(i);
+
+              console.log(`\nSELECT ${i}`);
+              console.log('name:', await select.getAttribute('name'));
+              console.log('id:', await select.getAttribute('id'));
+
+              const options = await select.locator('option').allTextContents();
+              console.log('opciones:', options);
+            }
+
+            console.log('\n=== INPUTS ===');
+            const inputs = await page.locator('input').count();
+
+            for (let i = 0; i < inputs; i++) {
+              const input = page.locator('input').nth(i);
+
+              console.log(`\nINPUT ${i}`);
+              console.log('type:', await input.getAttribute('type'));
+              console.log('name:', await input.getAttribute('name'));
+              console.log('id:', await input.getAttribute('id'));
+              console.log('placeholder:', await input.getAttribute('placeholder'));
+              console.log('value:', await input.inputValue().catch(() => ''));
+            }
+
+            console.log('\n=== BOTONES ===');
+            const buttons = await page.locator('button').allTextContents();
+            console.log(buttons);
+
+            console.log('\n=== ENLACES ===');
+            const links = await page.locator('a').allTextContents();
+            console.log(links);
+
+            console.log('\n=== TEXTO DE LA PAGINA ===');
+            console.log((await page.locator('body').innerText()).slice(0, 15000));
+
+            await page.screenshot({
+              path: 'gaztelugatxe.png',
+              fullPage: true
+            });
+
+            await browser.close();
+          })();
+          EOF
+
+          node diagnostico.js
+
+      - name: Guardar captura
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostico-gaztelugatxe
+          path: gaztelugatxe.png
