@@ -1,4 +1,4 @@
-name: Vigilar Gaztelugatxe
+name: Vigilar Gaztelugatxe 2
 
 on:
   workflow_dispatch:
